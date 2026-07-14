@@ -1,5 +1,7 @@
 package com.hrsinternational.manual;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.hrsinternational.tools.ToolRegistry;
 
 import java.io.IOException;
@@ -108,6 +110,23 @@ public final class ManualAgentMain {
         System.out.println("════════════════════════════════════════════════════════════════");
         System.out.printf("⏱ Elapsed time: %.2f seconds%n", elapsedSeconds);
         System.out.println("════════════════════════════════════════════════════════════════");
+
+        // ── Fallback: save report if LLM returned it as text ─────────
+        // Smaller models sometimes return the review as their final text
+        // response instead of calling write_report. They may also return it
+        // as a JSON-formatted tool call in text. Detect both cases and save.
+        Path reportFile = Path.of(reportPath);
+        boolean reportMissing = !Files.exists(reportFile) || isFileEmpty(reportFile);
+        if (reportMissing && result != null && !result.isBlank() && !result.startsWith("[ERROR]")) {
+            String reportContent = extractReportContent(result);
+            try {
+                Files.createDirectories(reportFile.getParent());
+                Files.writeString(reportFile, reportContent);
+                System.out.println("\n📄 Report saved (fallback): " + reportFile.toAbsolutePath());
+            } catch (IOException e) {
+                System.err.println("[WARN] Failed to save fallback report: " + e.getMessage());
+            }
+        }
     }
 
     /**
@@ -128,5 +147,51 @@ public final class ManualAgentMain {
             System.err.println("[WARN] Failed to load configuration: " + e.getMessage());
         }
         return config;
+    }
+
+    /**
+     * Checks whether an existing file is empty or contains only whitespace.
+     *
+     * @param file the file to check
+     * @return {@code true} if the file is empty or whitespace-only
+     */
+    private static boolean isFileEmpty(Path file) {
+        try {
+            return Files.size(file) == 0 || Files.readString(file).isBlank();
+        } catch (IOException e) {
+            return true;
+        }
+    }
+
+    /**
+     * Extracts the actual report content from the LLM's response.
+     *
+     * <p>Smaller models sometimes return the write_report tool call as JSON text
+     * like {@code {"name": "write_report", "parameters": {"content": "...", "path": "..."}}}.
+     * This method detects that pattern and extracts the {@code content} field.
+     * If the text is already plain markdown, it is returned as-is.
+     *
+     * @param result the raw text from the LLM's final response
+     * @return the extracted markdown content
+     */
+    private static String extractReportContent(String result) {
+        String trimmed = result.strip();
+        if (trimmed.startsWith("{") && trimmed.contains("write_report")) {
+            try {
+                JsonObject json = JsonParser.parseString(trimmed).getAsJsonObject();
+                JsonObject params = json.has("parameters")
+                        ? json.getAsJsonObject("parameters")
+                        : json;
+                if (params.has("content")) {
+                    String content = params.get("content").getAsString();
+                    if (!content.isBlank()) {
+                        return content;
+                    }
+                }
+            } catch (Exception ignored) {
+                // Not valid JSON — fall through to return as-is
+            }
+        }
+        return result;
     }
 }

@@ -136,6 +136,15 @@ public class FrameworkAgentMain {
             System.out.println("parsing, tool dispatch, and re-invocation");
             System.out.println("were all managed by the framework.");
             System.out.println("--------------------------------------------");
+
+            // Fallback: save report if LLM returned it as text instead of calling writeReport
+            Path reportFile = Path.of(outputPath.toString(), "framework_review.md");
+            boolean reportMissing = !Files.exists(reportFile) || Files.size(reportFile) == 0;
+            if (reportMissing && result != null && !result.isBlank()) {
+                Files.createDirectories(reportFile.getParent());
+                Files.writeString(reportFile, result);
+                System.out.println("\n📄 Report saved (fallback): " + reportFile.toAbsolutePath());
+            }
         } catch (Exception e) {
             long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
             double elapsedSec = elapsedMs / 1_000.0;

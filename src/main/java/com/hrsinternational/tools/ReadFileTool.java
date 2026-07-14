@@ -64,7 +64,14 @@ public final class ReadFileTool {
                         .formatted(fileSize, MAX_FILE_SIZE_BYTES, filePath);
             }
 
-            return Files.readString(filePath);
+            // Add line numbers so the LLM can reference specific lines in its review
+            var lines = Files.readAllLines(filePath);
+            var sb = new StringBuilder();
+            sb.append("File: ").append(filePath.getFileName()).append(" (").append(lines.size()).append(" lines)\n");
+            for (int i = 0; i < lines.size(); i++) {
+                sb.append("%4d: %s%n".formatted(i + 1, lines.get(i)));
+            }
+            return sb.toString();
         } catch (IOException e) {
             return "[ERROR] Failed to read file '%s': %s".formatted(filePath, e.getMessage());
         }

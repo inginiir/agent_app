@@ -79,6 +79,13 @@ public final class ToolRegistry {
             arguments = new JsonObject();
         }
 
+        // Normalize arguments: smaller models sometimes wrap args in
+        // {"function":"name", "parameters":{...}} or {"name":"...", "parameters":{...}}
+        // instead of the flat format. Unwrap if needed.
+        if (arguments.has("parameters") && arguments.get("parameters").isJsonObject()) {
+            arguments = arguments.getAsJsonObject("parameters");
+        }
+
         return switch (toolName) {
             case "read_file" -> {
                 String path = getRequiredString(arguments, "path");

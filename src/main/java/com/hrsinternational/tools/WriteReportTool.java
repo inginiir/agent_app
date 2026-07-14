@@ -32,8 +32,9 @@ public final class WriteReportTool {
         if (path == null || path.isBlank()) {
             return "[ERROR] Path must not be null or blank.";
         }
-        if (content == null) {
-            return "[ERROR] Content must not be null.";
+        if (content == null || content.isBlank()) {
+            return "[ERROR] Content must not be null or empty. You must first read and analyze "
+                    + "the source files using read_file and run_linter before writing the report.";
         }
 
         Path filePath;
