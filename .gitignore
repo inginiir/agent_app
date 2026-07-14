@@ -32,6 +32,3 @@ target/
 
 # OS
 .DS_Store
-
-# Agent output
-output/
