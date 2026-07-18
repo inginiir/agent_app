@@ -46,15 +46,20 @@ public class CodeReviewTools {
     /**
      * Lists all {@code .java} files in the specified directory.
      *
+     * <p>The {@code recursive} parameter accepts a string ("true"/"false") because
+     * smaller LLMs often send boolean values as strings, which LangChain4j's
+     * argument coercion cannot convert to primitive {@code boolean}.</p>
+     *
      * @param path      path to the directory to scan
-     * @param recursive whether to descend into subdirectories
+     * @param recursive whether to descend into subdirectories ("true" or "false")
      * @return a newline-separated list of {@code .java} file paths found
      */
     @Tool("List all files in a directory, optionally recursive. Returns newline-separated list of .java file paths.")
     public String listDirectory(
             @P("Path to the directory") String path,
-            @P("Whether to list recursively (default false)") boolean recursive) {
-        return listDirectoryTool.execute(path, recursive);
+            @P("Whether to list recursively - true or false, default false") String recursive) {
+        boolean recurse = Boolean.parseBoolean(recursive);
+        return listDirectoryTool.execute(path, recurse);
     }
 
     /**
