@@ -111,10 +111,10 @@ public final class ManualAgentMain {
         System.out.printf("⏱ Elapsed time: %.2f seconds%n", elapsedSeconds);
         System.out.println("════════════════════════════════════════════════════════════════");
 
-        // ── Fallback: save report if LLM returned it as text ─────────
-        // Smaller models sometimes return the review as their final text
-        // response instead of calling write_report. They may also return it
-        // as a JSON-formatted tool call in text. Detect both cases and save.
+        // ── Safety net: save report if max iterations were exhausted ──
+        // The agent loop now forces the LLM to call write_report, but if the
+        // loop hit the iteration limit, the report may not have been saved.
+        // This is a last-resort fallback for that edge case only.
         Path reportFile = Path.of(reportPath);
         boolean reportMissing = !Files.exists(reportFile) || isFileEmpty(reportFile);
         if (reportMissing && result != null && !result.isBlank() && !result.startsWith("[ERROR]")) {
@@ -122,7 +122,7 @@ public final class ManualAgentMain {
             try {
                 Files.createDirectories(reportFile.getParent());
                 Files.writeString(reportFile, reportContent);
-                System.out.println("\n📄 Report saved (fallback): " + reportFile.toAbsolutePath());
+                System.out.println("\n📄 Report saved (safety net — max iterations exceeded): " + reportFile.toAbsolutePath());
             } catch (IOException e) {
                 System.err.println("[WARN] Failed to save fallback report: " + e.getMessage());
             }

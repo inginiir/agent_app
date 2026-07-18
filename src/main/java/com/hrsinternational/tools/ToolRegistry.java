@@ -88,27 +88,33 @@ public final class ToolRegistry {
 
         return switch (toolName) {
             case "read_file" -> {
-                String path = getRequiredString(arguments, "path");
+                String path = getPathString(arguments);
                 if (path == null) yield "[ERROR] Missing required argument 'path' for read_file.";
                 yield readFileTool.execute(path);
             }
             case "list_directory" -> {
-                String path = getRequiredString(arguments, "path");
+                String path = getPathString(arguments);
                 if (path == null) yield "[ERROR] Missing required argument 'path' for list_directory.";
                 boolean recursive = arguments.has("recursive")
                         && arguments.get("recursive").getAsBoolean();
                 yield listDirectoryTool.execute(path, recursive);
             }
             case "run_linter" -> {
-                String path = getRequiredString(arguments, "path");
-                if (path == null) yield "[ERROR] Missing required argument 'path' for run_linter.";
+                String path = getPathString(arguments);
+                if (path == null) {
+                    yield "[ERROR] Missing required argument 'path' for run_linter. "
+                            + "You must provide the file path (e.g., 'path': '/dir/File.java'), "
+                            + "NOT the file contents.";
+                }
                 yield runLinterTool.execute(path);
             }
             case "write_report" -> {
-                String path = getRequiredString(arguments, "path");
+                String path = getPathString(arguments);
                 if (path == null) yield "[ERROR] Missing required argument 'path' for write_report.";
                 String content = getRequiredString(arguments, "content");
                 if (content == null) yield "[ERROR] Missing required argument 'content' for write_report.";
+                // Smaller models sometimes double-escape newlines as literal \n
+                content = content.replace("\\n", "\n");
                 yield writeReportTool.execute(path, content);
             }
             default -> "[ERROR] Unknown tool: '%s'. Available tools: read_file, list_directory, run_linter, write_report."
@@ -239,5 +245,24 @@ public final class ToolRegistry {
             return null;
         }
         return arguments.get(key).getAsString();
+    }
+
+    /**
+     * Extracts a path argument from a {@link JsonObject}, trying common aliases.
+     *
+     * <p>Smaller LLMs often use varied argument names like {@code file_path},
+     * {@code filepath}, or {@code file} instead of the canonical {@code path}.
+     * This method tries all known variants and returns the first match.
+     *
+     * @return the path string, or {@code null} if no alias matched
+     */
+    private String getPathString(JsonObject arguments) {
+        for (String alias : new String[]{"path", "file_path", "filepath", "file", "filename"}) {
+            String value = getRequiredString(arguments, alias);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 }

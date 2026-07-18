@@ -25,11 +25,18 @@ import java.io.IOException;
  * <p>The system prompt instructs the LLM to act as an expert Java code reviewer
  * that uses the available tools to discover, read, lint, and report on Java
  * source files.
+ *
+ * <p><strong>Enforcement:</strong> If the LLM attempts to finish without calling
+ * {@code write_report}, the loop injects a correction message and forces the
+ * agent back into the loop. This ensures the full workflow is always completed.
  */
 public final class ManualAgentLoop {
 
     /** Maximum characters of a tool result to display in the console log. */
     private static final int RESULT_PREVIEW_LENGTH = 200;
+
+    /** Maximum times the loop will try to force the agent to call write_report. */
+    private static final int MAX_REENTRY_ATTEMPTS = 3;
 
     static final String SYSTEM_PROMPT = """
             You are an expert Java code reviewer. You MUST follow the exact workflow below.
@@ -97,6 +104,9 @@ public final class ManualAgentLoop {
      * feeds results back, and repeats until the LLM produces a final text
      * response or the iteration limit is reached.
      *
+     * <p>If the LLM attempts to finish without calling {@code write_report},
+     * the loop injects a correction message and forces the agent to continue.
+     *
      * @param userMessage the user's request (e.g., "Review the Java files in /path/to/project")
      * @return the LLM's final text response, or an error message if the loop
      *         exceeds the maximum iterations
@@ -119,6 +129,11 @@ public final class ManualAgentLoop {
 
         // Tool schemas
         JsonArray toolSchemas = registry.getToolSchemas();
+
+        // Track whether key tools were called successfully
+        boolean reportWritten = false;
+        boolean filesRead = false;
+        int reentryAttempts = 0;
 
         // ── Agentic Loop ─────────────────────────────────────────────
         for (int iteration = 1; iteration <= maxIterations; iteration++) {
@@ -165,6 +180,14 @@ public final class ManualAgentLoop {
                     // Execute the tool
                     String result = registry.execute(name, arguments);
 
+                    // Track successful tool calls
+                    if ("write_report".equals(name) && result.startsWith("[SUCCESS]")) {
+                        reportWritten = true;
+                    }
+                    if ("read_file".equals(name) && !result.startsWith("[ERROR]")) {
+                        filesRead = true;
+                    }
+
                     // Build tool result message
                     JsonObject toolResultMsg = new JsonObject();
                     toolResultMsg.addProperty("role", "tool");
@@ -185,10 +208,42 @@ public final class ManualAgentLoop {
                 continue;
             }
 
-            // No tool calls — this is the final response
+            // No tool calls — the LLM wants to finish
             String content = assistantMessage.has("content") && !assistantMessage.get("content").isJsonNull()
                     ? assistantMessage.get("content").getAsString()
                     : "";
+
+            // ── Guard: force agent to call write_report ──────────────
+            // Only enforce write_report if the model has actually read files
+            // (otherwise we'd force a report before any analysis was done).
+            if (!reportWritten && filesRead && !content.isBlank()) {
+                reentryAttempts++;
+
+                if (reentryAttempts <= MAX_REENTRY_ATTEMPTS) {
+                    System.out.println("[Iteration %d] ⚠ Agent returned text without calling write_report — forcing re-entry (attempt %d/%d)..."
+                            .formatted(iteration, reentryAttempts, MAX_REENTRY_ATTEMPTS));
+
+                    JsonObject correction = new JsonObject();
+                    correction.addProperty("role", "user");
+                    correction.addProperty("content",
+                            "You have not saved the report yet. You MUST call the write_report tool now "
+                            + "with the full review content and the report path. Do NOT respond with text — "
+                            + "call the write_report tool.");
+                    messages.add(correction);
+                    continue;
+                } else {
+                    // Model can't follow instructions — call write_report directly
+                    System.out.println("[Iteration %d] ⚠ Max re-entry attempts reached — calling write_report directly..."
+                            .formatted(iteration));
+                    String reportPath = extractReportPath(userMessage);
+                    String reportContent = content.replace("\\n", "\n");
+                    String result = registry.execute("write_report",
+                            buildWriteReportArgs(reportPath, reportContent));
+                    System.out.println("[Iteration %d] Tool: write_report (forced) | Result: %s"
+                            .formatted(iteration, result));
+                    reportWritten = result.startsWith("[SUCCESS]");
+                }
+            }
 
             if (!content.isBlank()) {
                 System.out.println("\n✅ Agent finished with final response.");
@@ -205,5 +260,28 @@ public final class ManualAgentLoop {
                 .formatted(maxIterations);
         System.err.println(error);
         return error;
+    }
+
+    /**
+     * Extracts the report output path from the user message.
+     * Looks for the "Save the report to" pattern in the message.
+     */
+    private static String extractReportPath(String userMessage) {
+        String marker = "Save the report to ";
+        int idx = userMessage.indexOf(marker);
+        if (idx >= 0) {
+            return userMessage.substring(idx + marker.length()).strip();
+        }
+        return "output/reports/manual_review.md";
+    }
+
+    /**
+     * Builds a JsonObject with path and content arguments for write_report.
+     */
+    private static JsonObject buildWriteReportArgs(String path, String content) {
+        JsonObject args = new JsonObject();
+        args.addProperty("path", path);
+        args.addProperty("content", content);
+        return args;
     }
 }
