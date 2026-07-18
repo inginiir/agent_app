@@ -1,5 +1,7 @@
 package com.hrsinternational.framework;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.service.AiServices;
 
@@ -61,7 +63,7 @@ public class FrameworkAgentMain {
      *
      * @param args command-line arguments (currently unused)
      */
-    static void main(String[] args) {
+    public static void main(String[] args) {
         printBanner();
 
         // ── 1. Load configuration ──────────────────────────────────────
@@ -141,8 +143,9 @@ public class FrameworkAgentMain {
             Path reportFile = Path.of(outputPath.toString(), "framework_review.md");
             boolean reportMissing = !Files.exists(reportFile) || Files.size(reportFile) == 0;
             if (reportMissing && result != null && !result.isBlank()) {
+                String reportContent = extractReportContent(result);
                 Files.createDirectories(reportFile.getParent());
-                Files.writeString(reportFile, result);
+                Files.writeString(reportFile, reportContent);
                 System.out.println("\n📄 Report saved (fallback): " + reportFile.toAbsolutePath());
             }
         } catch (Exception e) {
@@ -197,5 +200,33 @@ public class FrameworkAgentMain {
             e.printStackTrace();
         }
         return props;
+    }
+
+    /**
+     * Extracts actual report content from the LLM's response.
+     *
+     * <p>Smaller models sometimes return the writeReport tool call as JSON text
+     * instead of making a proper tool call. This detects that pattern and
+     * extracts the markdown content.
+     */
+    private static String extractReportContent(String result) {
+        String trimmed = result.strip();
+        if (trimmed.startsWith("{") && (trimmed.contains("write_report") || trimmed.contains("writeReport"))) {
+            try {
+                JsonObject json = JsonParser.parseString(trimmed).getAsJsonObject();
+                JsonObject params = json.has("parameters")
+                        ? json.getAsJsonObject("parameters")
+                        : json;
+                if (params.has("content")) {
+                    String content = params.get("content").getAsString();
+                    if (!content.isBlank()) {
+                        return content;
+                    }
+                }
+            } catch (Exception ignored) {
+                // Not valid JSON — return as-is
+            }
+        }
+        return result;
     }
 }
