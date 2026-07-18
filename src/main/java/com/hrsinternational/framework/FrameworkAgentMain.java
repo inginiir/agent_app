@@ -2,6 +2,7 @@ package com.hrsinternational.framework;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.service.AiServices;
 
@@ -101,10 +102,15 @@ public class FrameworkAgentMain {
                 .timeout(Duration.ofMinutes(5))
                 .build();
 
-        // ── 5. Build the AiService proxy with tools ────────────────────
+        // ── 5. Build the AiService proxy with tools and chat memory ──
+        // ChatMemory is critical: without it, each review() call is stateless.
+        // If the agent returns text without calling writeReport, re-invocations
+        // need the full conversation context to know what was already analyzed.
+        CodeReviewTools tools = new CodeReviewTools();
         CodeReviewAssistant assistant = AiServices.builder(CodeReviewAssistant.class)
                 .chatModel(model)
-                .tools(new CodeReviewTools())
+                .tools(tools)
+                .chatMemory(MessageWindowChatMemory.withMaxMessages(50))
                 .build();
 
         // ── 6. Run the review ──────────────────────────────────────────
@@ -116,9 +122,22 @@ public class FrameworkAgentMain {
         System.out.println();
 
         long startTime = System.nanoTime();
+        int maxRetries = 3;
 
         try {
             String result = assistant.review(userMessage);
+
+            // ── Enforce: re-invoke if writeReport was not called ──────
+            for (int attempt = 1; attempt <= maxRetries && !tools.isReportWritten(); attempt++) {
+                System.out.printf("[Attempt %d/%d] ⚠ Agent did not call writeReport — re-invoking...%n",
+                        attempt, maxRetries);
+                result = assistant.review(
+                        "You have not saved the report yet. You MUST call the writeReport tool now "
+                        + "with the full review content and the report path: "
+                        + outputPath + "/framework_review.md. "
+                        + "Do NOT respond with text — call the writeReport tool.");
+            }
+
             long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
             double elapsedSec = elapsedMs / 1_000.0;
 
@@ -130,6 +149,9 @@ public class FrameworkAgentMain {
             System.out.println();
             System.out.printf("Elapsed time: %.2f seconds%n", elapsedSec);
             System.out.println();
+            if (tools.isReportWritten()) {
+                System.out.println("✅ Report saved by the agent via writeReport tool.");
+            }
             System.out.println("--------------------------------------------");
             System.out.println("NOTE: Compare this with Phase 1 — the manual");
             System.out.println("agent loop is no longer needed. LangChain4j's");
@@ -139,14 +161,15 @@ public class FrameworkAgentMain {
             System.out.println("were all managed by the framework.");
             System.out.println("--------------------------------------------");
 
-            // Fallback: save report if LLM returned it as text instead of calling writeReport
+            // Safety net: save report only if agent AND re-invocations all failed
             Path reportFile = Path.of(outputPath.toString(), "framework_review.md");
             boolean reportMissing = !Files.exists(reportFile) || Files.size(reportFile) == 0;
             if (reportMissing && result != null && !result.isBlank()) {
                 String reportContent = extractReportContent(result);
                 Files.createDirectories(reportFile.getParent());
                 Files.writeString(reportFile, reportContent);
-                System.out.println("\n📄 Report saved (fallback): " + reportFile.toAbsolutePath());
+                System.out.println("\n📄 Report saved (safety net — agent failed to call writeReport): "
+                        + reportFile.toAbsolutePath());
             }
         } catch (Exception e) {
             long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;

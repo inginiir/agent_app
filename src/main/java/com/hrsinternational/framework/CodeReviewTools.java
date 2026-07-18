@@ -31,6 +31,18 @@ public class CodeReviewTools {
     private final RunLinterTool runLinterTool = new RunLinterTool();
     private final WriteReportTool writeReportTool = new WriteReportTool();
 
+    /** Tracks whether writeReport was called successfully during this session. */
+    private boolean reportWritten = false;
+
+    /**
+     * Returns whether the {@code writeReport} tool was called successfully.
+     *
+     * @return {@code true} if a report was saved via the tool
+     */
+    public boolean isReportWritten() {
+        return reportWritten;
+    }
+
     /**
      * Reads the full contents of a source file from disk.
      *
@@ -84,6 +96,14 @@ public class CodeReviewTools {
     public String writeReport(
             @P("Output file path for the report") String path,
             @P("Markdown content of the review report") String content) {
-        return writeReportTool.execute(path, content);
+        // Smaller models sometimes double-escape newlines as literal \n
+        if (content != null) {
+            content = content.replace("\\n", "\n");
+        }
+        String result = writeReportTool.execute(path, content);
+        if (result.startsWith("[SUCCESS]")) {
+            reportWritten = true;
+        }
+        return result;
     }
 }
