@@ -16,8 +16,8 @@ import com.hrsinternational.tools.WriteReportTool;
  * {@link Tool} so that the framework can automatically generate JSON
  * tool schemas and dispatch calls from the LLM to the correct method.</p>
  *
- * <p>All operations are delegated to the underlying tool classes, keeping
- * this wrapper thin and focused solely on framework integration.</p>
+ * <p>All tool calls are logged to standard output for visibility, since
+ * LangChain4j's internal tool loop is otherwise silent.</p>
  *
  * @see ReadFileTool
  * @see ListDirectoryTool
@@ -33,6 +33,15 @@ public class CodeReviewTools {
 
     /** Tracks whether writeReport was called successfully during this session. */
     private boolean reportWritten = false;
+
+    /** Tracks whether at least one file was read successfully. */
+    private boolean filesRead = false;
+
+    /** Tracks whether runLinter was called on at least one file. */
+    private boolean linterRun = false;
+
+    /** Counts total tool invocations for logging. */
+    private int callCount = 0;
 
     /**
      * Returns whether the {@code writeReport} tool was called successfully.
@@ -52,7 +61,13 @@ public class CodeReviewTools {
      */
     @Tool("Read the contents of a source file at the given path")
     public String readFile(@P("Absolute or relative path to the file") String path) {
-        return readFileTool.execute(path);
+        logToolCall("readFile", path);
+        String result = readFileTool.execute(path);
+        if (!result.startsWith("[ERROR]")) {
+            filesRead = true;
+        }
+        logToolResult(result);
+        return result;
     }
 
     /**
@@ -70,8 +85,11 @@ public class CodeReviewTools {
     public String listDirectory(
             @P("Path to the directory") String path,
             @P("Whether to list recursively - true or false, default false") String recursive) {
+        logToolCall("listDirectory", path + " (recursive=" + recursive + ")");
         boolean recurse = Boolean.parseBoolean(recursive);
-        return listDirectoryTool.execute(path, recurse);
+        String result = listDirectoryTool.execute(path, recurse);
+        logToolResult(result);
+        return result;
     }
 
     /**
@@ -82,7 +100,13 @@ public class CodeReviewTools {
      */
     @Tool("Run style checks and basic static analysis on a Java file. Returns list of issues found with line numbers and severity.")
     public String runLinter(@P("Path to the Java source file") String path) {
-        return runLinterTool.execute(path);
+        logToolCall("runLinter", path);
+        String result = runLinterTool.execute(path);
+        if (!result.startsWith("[ERROR]")) {
+            linterRun = true;
+        }
+        logToolResult(result);
+        return result;
     }
 
     /**
@@ -96,6 +120,20 @@ public class CodeReviewTools {
     public String writeReport(
             @P("Output file path for the report") String path,
             @P("Markdown content of the review report") String content) {
+        logToolCall("writeReport", path);
+        // Guard: reject report if files were not read or linter was not run
+        if (!filesRead) {
+            String error = "[ERROR] You must call readFile on the source files BEFORE writing the report. "
+                    + "Call listDirectory first, then readFile on each file, then runLinter on each file.";
+            logToolResult(error);
+            return error;
+        }
+        if (!linterRun) {
+            String error = "[ERROR] You must call runLinter on the source files BEFORE writing the report. "
+                    + "Call runLinter on each .java file you read, then call writeReport.";
+            logToolResult(error);
+            return error;
+        }
         // Smaller models sometimes double-escape newlines as literal \n
         if (content != null) {
             content = content.replace("\\n", "\n");
@@ -104,6 +142,21 @@ public class CodeReviewTools {
         if (result.startsWith("[SUCCESS]")) {
             reportWritten = true;
         }
+        logToolResult(result);
         return result;
+    }
+
+    // ── Logging helpers ──────────────────────────────────────────────
+
+    private void logToolCall(String toolName, String args) {
+        callCount++;
+        System.out.printf("  [Tool #%d] %s(%s)%n", callCount, toolName, args);
+    }
+
+    private void logToolResult(String result) {
+        String preview = result.length() > 150
+                ? result.substring(0, 150) + "..."
+                : result;
+        System.out.printf("           → %s%n", preview.replace("\n", " "));
     }
 }

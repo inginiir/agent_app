@@ -2,7 +2,6 @@ package com.hrsinternational.framework;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.service.AiServices;
 
@@ -102,15 +101,16 @@ public class FrameworkAgentMain {
                 .timeout(Duration.ofMinutes(5))
                 .build();
 
-        // ── 5. Build the AiService proxy with tools and chat memory ──
-        // ChatMemory is critical: without it, each review() call is stateless.
-        // If the agent returns text without calling writeReport, re-invocations
-        // need the full conversation context to know what was already analyzed.
+        // ── 5. Build the AiService proxy with tools ────────────────────
+        // Note: ChatMemory is intentionally NOT used. With llama3.1:8b,
+        // re-invocation attempts bloat the context and confuse the model.
+        // The model reliably reads files via LangChain4j's tool loop; the
+        // report is saved from the model's text response if writeReport
+        // was not called directly by the agent.
         CodeReviewTools tools = new CodeReviewTools();
         CodeReviewAssistant assistant = AiServices.builder(CodeReviewAssistant.class)
                 .chatModel(model)
                 .tools(tools)
-                .chatMemory(MessageWindowChatMemory.withMaxMessages(50))
                 .build();
 
         // ── 6. Run the review ──────────────────────────────────────────
@@ -122,21 +122,9 @@ public class FrameworkAgentMain {
         System.out.println();
 
         long startTime = System.nanoTime();
-        int maxRetries = 3;
 
         try {
             String result = assistant.review(userMessage);
-
-            // ── Enforce: re-invoke if writeReport was not called ──────
-            for (int attempt = 1; attempt <= maxRetries && !tools.isReportWritten(); attempt++) {
-                System.out.printf("[Attempt %d/%d] ⚠ Agent did not call writeReport — re-invoking...%n",
-                        attempt, maxRetries);
-                result = assistant.review(
-                        "You have not saved the report yet. You MUST call the writeReport tool now "
-                        + "with the full review content and the report path: "
-                        + outputPath + "/framework_review.md. "
-                        + "Do NOT respond with text — call the writeReport tool.");
-            }
 
             long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
             double elapsedSec = elapsedMs / 1_000.0;
@@ -161,15 +149,17 @@ public class FrameworkAgentMain {
             System.out.println("were all managed by the framework.");
             System.out.println("--------------------------------------------");
 
-            // Safety net: save report only if agent AND re-invocations all failed
-            Path reportFile = Path.of(outputPath.toString(), "framework_review.md");
-            boolean reportMissing = !Files.exists(reportFile) || Files.size(reportFile) == 0;
-            if (reportMissing && result != null && !result.isBlank()) {
+            // Save report from the model's text response if writeReport was not called.
+            // With small models, the agent reliably uses tools to read and analyze
+            // files but often returns the review as text instead of calling writeReport.
+            // This is an expected limitation — the framework handles the tool loop,
+            // but cannot force the model to use a specific tool as the final step.
+            if (!tools.isReportWritten() && result != null && !result.isBlank()) {
+                Path reportFile = Path.of(outputPath.toString(), "framework_review.md");
                 String reportContent = extractReportContent(result);
                 Files.createDirectories(reportFile.getParent());
                 Files.writeString(reportFile, reportContent);
-                System.out.println("\n📄 Report saved (safety net — agent failed to call writeReport): "
-                        + reportFile.toAbsolutePath());
+                System.out.println("\n📄 Report saved from model response: " + reportFile.toAbsolutePath());
             }
         } catch (Exception e) {
             long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
@@ -240,10 +230,14 @@ public class FrameworkAgentMain {
                 JsonObject params = json.has("parameters")
                         ? json.getAsJsonObject("parameters")
                         : json;
-                if (params.has("content")) {
-                    String content = params.get("content").getAsString();
-                    if (!content.isBlank()) {
-                        return content;
+                // Try known content keys: "content" (manual style), "arg1" (LangChain4j positional)
+                for (String key : new String[]{"content", "arg1", "arg0"}) {
+                    if (params.has(key)) {
+                        String content = params.get(key).getAsString();
+                        // Skip if it looks like a file path (that's the path arg, not content)
+                        if (!content.isBlank() && !content.endsWith(".md") && content.length() > 50) {
+                            return content.replace("\\n", "\n");
+                        }
                     }
                 }
             } catch (Exception ignored) {
